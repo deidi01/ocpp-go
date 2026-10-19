@@ -123,6 +123,16 @@ type Server interface {
 	// GetChannel retrieves an active Channel connection by its unique identifier.
 	// If a connection with the given ID exists, it returns the corresponding webSocket instance.
 	// If no connection is found with the specified ID, it returns nil and a false flag.
+	
+	// HTTPHandler initializes the server and registers the WebSocket handler
+	// for listenPath, then returns the underlying HTTP handler.
+	// Use instead of Start when hosting inside a shared http.Server.
+	// Call SetAddr after binding the shared listener.
+	HTTPHandler(listenPath string) http.Handler
+
+	// SetAddr stores the listener address so Addr() returns correctly
+	// when using HTTPHandler instead of Start.
+	SetAddr(addr *net.TCPAddr)
 	GetChannel(websocketId string) (Channel, bool)
 }
 
@@ -309,16 +319,17 @@ func (s *server) Start(port int, listenPath string) {
 }
 
 func (s *server) Stop() {
-	log.Info("stopping websocket server")
-	err := s.httpServer.Shutdown(context.TODO())
-	if err != nil {
-		s.error(fmt.Errorf("shutdown failed: %w", err))
-	}
-
-	if s.errC != nil {
-		close(s.errC)
-		s.errC = nil
-	}
+    log.Info("stopping websocket server")
+    if s.httpServer != nil {
+        if err := s.httpServer.Shutdown(context.TODO()); err != nil {
+            s.error(fmt.Errorf("shutdown failed: %w", err))
+        }
+    }
+    s.stopConnections()
+    if s.errC != nil {
+        close(s.errC)
+        s.errC = nil
+    }
 }
 
 func (s *server) StopConnection(id string, closeError websocket.CloseError) error {
@@ -466,6 +477,23 @@ out:
 		var channel Channel = ws
 		s.newClientHandler(channel)
 	}
+}
+
+
+func (s *server) HTTPHandler(listenPath string) http.Handler {
+   s.connMutex.Lock()
+   s.connections = make(map[string]*webSocket)
+   s.connMutex.Unlock()
+   s.AddHttpHandler(listenPath, func(w http.ResponseWriter, r *http.Request) {
+   s.wsHandler(w, r)
+   })
+   return s.httpHandler
+}
+
+func (s *server) SetAddr(addr *net.TCPAddr) {
+   s.addrMutex.Lock()
+   s.addr = addr
+   s.addrMutex.Unlock()
 }
 
 // --------- Internal callbacks webSocket -> server ---------
